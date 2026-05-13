@@ -247,28 +247,21 @@ struct ViewHierarchyHandler: HTTPHandler {
     /// are reachable by queries but absent from `XCUIApplication.snapshot()`'s
     /// tree walk at any depth or root.
     private func collectMissingLeafElements(_ element: XCUIApplication, alreadyInHierarchy: AXElement) -> AXElement? {
-        // Cheap gate: compare query-graph counts to snapshot counts for the two
-        // most common leaf types. If the snapshot already has every button AND
-        // every static text the query graph can find, the per-type enumeration
-        // + per-element re-snapshot below would discover nothing to add.
-        // Buttons catch interactive sheets; static texts catch informational /
-        // error / status popovers that have no button. Two IPC calls here vs.
-        // up to 8 + N below.
-        let buttonTypeRawValue = Int(XCUIElement.ElementType.button.rawValue)
+        // Cheap gate: nearly every sheet contains at least one static text
+        // (title, description, status message, error label). If the snapshot
+        // already has every static text the query graph can find, the per-type
+        // enumeration + per-element re-snapshot below would discover nothing
+        // to add. One IPC call here vs. up to 8 + N below. Static text is the
+        // chosen signal over buttons because text is near-universal in sheets
+        // while buttonless sheets (informational / error / status) are common.
         let staticTextTypeRawValue = Int(XCUIElement.ElementType.staticText.rawValue)
-        var localButtonCount = 0
         var localStaticTextCount = 0
-        func countByType(_ ax: AXElement) {
-            switch ax.elementType {
-            case buttonTypeRawValue: localButtonCount += 1
-            case staticTextTypeRawValue: localStaticTextCount += 1
-            default: break
-            }
-            for child in ax.children ?? [] { countByType(child) }
+        func countStaticTexts(_ ax: AXElement) {
+            if ax.elementType == staticTextTypeRawValue { localStaticTextCount += 1 }
+            for child in ax.children ?? [] { countStaticTexts(child) }
         }
-        countByType(alreadyInHierarchy)
-        if element.buttons.count <= localButtonCount
-            && element.staticTexts.count <= localStaticTextCount {
+        countStaticTexts(alreadyInHierarchy)
+        if element.staticTexts.count <= localStaticTextCount {
             return nil
         }
 
