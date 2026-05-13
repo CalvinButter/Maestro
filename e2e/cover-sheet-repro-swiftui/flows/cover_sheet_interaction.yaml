@@ -1,0 +1,23 @@
+## Regression target for https://github.com/mobile-dev-inc/Maestro/issues/1924.
+##
+## Launches CoverSheetRepro, opens a `.fullScreenCover`, then opens a `.sheet`
+## on top of it, then taps a button inside the sheet. The "Sheet taps: 1"
+## assertion proves the in-sheet tap actually reached the button — if the
+## hierarchy bug prevents Maestro from interacting with the sheet, that tap is
+## either misrouted or never dispatched, and the assertion fails.
+
+appId: com.maestro.coversheetrepro
+name: Sheet presented from fullScreenCover is interactable
+tags:
+  - ios
+---
+- launchApp:
+    clearState: true
+- tapOn: "Show Cover"
+- assertVisible: "Cover Content"
+- tapOn: "Show Sheet"
+- assertVisible: "Sheet Content"
+- tapOn: "Tap Me In Sheet"
+- tapOn: "Dismiss Sheet"
+- assertNotVisible: "Sheet Content"
+- assertVisible: "Sheet taps: 1"

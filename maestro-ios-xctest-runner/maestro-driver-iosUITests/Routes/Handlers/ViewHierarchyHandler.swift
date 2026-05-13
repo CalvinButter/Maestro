@@ -47,6 +47,11 @@ struct ViewHierarchyHandler: HTTPHandler {
     func getAppViewHierarchy(foregroundApp: XCUIApplication, excludeKeyboardElements: Bool) async throws -> AXElement {
         let appHierarchy = try getHierarchyWithFallback(foregroundApp)
         await SystemPermissionHelper.handleSystemPermissionAlertIfNeeded(appHierarchy: appHierarchy, foregroundApp: foregroundApp)
+
+        // Collect leaves reachable by query but missed by snapshot (see #1924).
+        let queryReachableLeaves = logger.measure(message: "Collect query-reachable leaves") {
+            collectMissingLeafElements(foregroundApp, alreadyInHierarchy: appHierarchy)
+        }
                 
         let statusBars = logger.measure(message: "Fetch status bar hierarchy") {
             fullStatusBars(springboardApplication)
@@ -73,7 +78,7 @@ struct ViewHierarchyHandler: HTTPHandler {
                 let appWidth = appFrame["Width"], appWidth > 0,
                 let appHeight = appFrame["Height"], appHeight > 0
             else {
-                return AXElement(children: [appHierarchy, AXElement(children: statusBars), safariWebViewHierarchy].compactMap { $0 })
+                return AXElement(children: [appHierarchy, AXElement(children: statusBars), safariWebViewHierarchy, queryReachableLeaves].compactMap { $0 })
             }
 
             // Springboard always reports its frame in portrait dimensions (e.g. 1024×1366),
@@ -87,7 +92,7 @@ struct ViewHierarchyHandler: HTTPHandler {
 
             if isSameAreaDifferentOrientation {
                 NSLog("Skipping offset adjustment: device and app frames are same size but different orientation")
-                return AXElement(children: [appHierarchy, AXElement(children: statusBars), safariWebViewHierarchy].compactMap { $0 })
+                return AXElement(children: [appHierarchy, AXElement(children: statusBars), safariWebViewHierarchy, queryReachableLeaves].compactMap { $0 })
             }
 
             let offsetX = deviceWidth - appWidth
@@ -98,9 +103,9 @@ struct ViewHierarchyHandler: HTTPHandler {
 
             let adjustedAppHierarchy = expandElementSizes(appHierarchy, offset: offset)
 
-            return AXElement(children: [adjustedAppHierarchy, AXElement(children: statusBars), safariWebViewHierarchy].compactMap { $0 })
+            return AXElement(children: [adjustedAppHierarchy, AXElement(children: statusBars), safariWebViewHierarchy, queryReachableLeaves].compactMap { $0 })
         } else {
-            return AXElement(children: [appHierarchy, AXElement(children: statusBars), safariWebViewHierarchy].compactMap { $0 })
+            return AXElement(children: [appHierarchy, AXElement(children: statusBars), safariWebViewHierarchy, queryReachableLeaves].compactMap { $0 })
         }
     }
     
@@ -230,11 +235,79 @@ struct ViewHierarchyHandler: HTTPHandler {
         guard element.alerts.firstMatch.exists else {
             return nil
         }
-        
+
         let alert = element.alerts.firstMatch
         return try? elementHierarchy(xcuiElement: alert)
     }
-    
+
+    /// Enumerates interactive descendant types via XCTest find-by-criteria
+    /// queries and snapshots each result that isn't already present in
+    /// `alreadyInHierarchy` by frame. Workaround for #1924: SwiftUI sheets
+    /// presented over `.fullScreenCover` with a partial presentation detent
+    /// are reachable by queries but absent from `XCUIApplication.snapshot()`'s
+    /// tree walk at any depth or root.
+    private func collectMissingLeafElements(_ element: XCUIApplication, alreadyInHierarchy: AXElement) -> AXElement? {
+        // Cheap gate: compare query-graph counts to snapshot counts for the two
+        // most common leaf types. If the snapshot already has every button AND
+        // every static text the query graph can find, the per-type enumeration
+        // + per-element re-snapshot below would discover nothing to add.
+        // Buttons catch interactive sheets; static texts catch informational /
+        // error / status popovers that have no button. Two IPC calls here vs.
+        // up to 8 + N below.
+        let buttonTypeRawValue = XCUIElement.ElementType.button.rawValue
+        let staticTextTypeRawValue = XCUIElement.ElementType.staticText.rawValue
+        var localButtonCount = 0
+        var localStaticTextCount = 0
+        func countByType(_ ax: AXElement) {
+            switch ax.elementType {
+            case buttonTypeRawValue: localButtonCount += 1
+            case staticTextTypeRawValue: localStaticTextCount += 1
+            default: break
+            }
+            for child in ax.children ?? [] { countByType(child) }
+        }
+        countByType(alreadyInHierarchy)
+        if element.buttons.count <= localButtonCount
+            && element.staticTexts.count <= localStaticTextCount {
+            return nil
+        }
+
+        var existingKeys = Set<String>()
+        func indexFrames(_ ax: AXElement) {
+            let x = ax.frame["X"] ?? 0
+            let y = ax.frame["Y"] ?? 0
+            let w = ax.frame["Width"] ?? 0
+            let h = ax.frame["Height"] ?? 0
+            existingKeys.insert("\(ax.elementType)/\(x),\(y),\(w),\(h)")
+            for child in ax.children ?? [] {
+                indexFrames(child)
+            }
+        }
+        indexFrames(alreadyInHierarchy)
+
+        let leafTypes: [XCUIElement.ElementType] = [
+            .button, .staticText, .textField, .secureTextField,
+            .switch, .toggle, .image, .link
+        ]
+        var missing: [AXElement] = []
+        for type in leafTypes {
+            let matches = element.descendants(matching: type).allElementsBoundByIndex
+            for match in matches {
+                guard let snap = try? elementHierarchy(xcuiElement: match) else { continue }
+                let x = snap.frame["X"] ?? 0
+                let y = snap.frame["Y"] ?? 0
+                let w = snap.frame["Width"] ?? 0
+                let h = snap.frame["Height"] ?? 0
+                let key = "\(snap.elementType)/\(x),\(y),\(w),\(h)"
+                if !existingKeys.contains(key) {
+                    missing.append(snap)
+                }
+            }
+        }
+        guard !missing.isEmpty else { return nil }
+        return AXElement(children: missing)
+    }
+
     func fullStatusBars(_ element: XCUIApplication) -> [AXElement]? {
         guard element.statusBars.firstMatch.exists else {
             return nil
