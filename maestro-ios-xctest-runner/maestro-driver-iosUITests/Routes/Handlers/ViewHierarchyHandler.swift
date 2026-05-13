@@ -254,8 +254,8 @@ struct ViewHierarchyHandler: HTTPHandler {
         // Buttons catch interactive sheets; static texts catch informational /
         // error / status popovers that have no button. Two IPC calls here vs.
         // up to 8 + N below.
-        let buttonTypeRawValue = XCUIElement.ElementType.button.rawValue
-        let staticTextTypeRawValue = XCUIElement.ElementType.staticText.rawValue
+        let buttonTypeRawValue = Int(XCUIElement.ElementType.button.rawValue)
+        let staticTextTypeRawValue = Int(XCUIElement.ElementType.staticText.rawValue)
         var localButtonCount = 0
         var localStaticTextCount = 0
         func countByType(_ ax: AXElement) {
