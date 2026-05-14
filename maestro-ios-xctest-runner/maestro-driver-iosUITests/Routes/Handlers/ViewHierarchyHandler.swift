@@ -293,6 +293,7 @@ struct ViewHierarchyHandler: HTTPHandler {
                 let h = snap.frame["Height"] ?? 0
                 let key = "\(snap.elementType)/\(x),\(y),\(w),\(h)"
                 if !existingKeys.contains(key) {
+                    existingKeys.insert(key)
                     missing.append(snap)
                 }
             }
